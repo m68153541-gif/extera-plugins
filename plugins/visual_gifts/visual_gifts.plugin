@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -181,13 +181,18 @@ class VisualGiftsPlugin(BasePlugin):
     def _build_settings(self) -> List[Any]:
         return [
             Header(text="Визуальный баланс"),
+            Text(
+                text="Показать состояние (диагностика)",
+                subtext="Нажмите, чтобы увидеть реальные значения",
+                icon="msg_info",
+                on_click=self._show_state,
+            ),
             Input(
                 key=K_STARS,
                 text="Баланс Stars",
                 default=str(DEFAULT_STARS),
                 subtext="Целое число, например 2500",
                 icon="msg_edit",
-                on_change=self._on_stars_changed,
             ),
             Input(
                 key=K_GRAM,
@@ -195,7 +200,6 @@ class VisualGiftsPlugin(BasePlugin):
                 default=str(DEFAULT_GRAM),
                 subtext="Дробное число, например 5.25",
                 icon="msg_edit",
-                on_change=self._on_gram_changed,
             ),
             Text(
                 text="Текущий баланс",
@@ -341,7 +345,8 @@ class VisualGiftsPlugin(BasePlugin):
         text = ("%.4f" % float(value)).rstrip("0").rstrip(".")
         return text if text and text != "-" else "0"
 
-    def _on_stars_changed(self, value: str):
+    def _on_stars_changed(self, *args):
+        value = args[-1] if args else ""
         try:
             n = max(0, int(self._num(value, self._stars())))
             self.set_setting(K_STARS, str(n))
@@ -349,7 +354,8 @@ class VisualGiftsPlugin(BasePlugin):
         except Exception:
             self.logger.exception("stars change failed")
 
-    def _on_gram_changed(self, value: str):
+    def _on_gram_changed(self, *args):
+        value = args[-1] if args else ""
         try:
             n = max(0.0, self._num(value, self._gram()))
             self.set_setting(K_GRAM, self._fmt_gram(n))
@@ -397,6 +403,44 @@ class VisualGiftsPlugin(BasePlugin):
     # ------------------------------------------------------------------ #
     # Settings sub-pages
     # ------------------------------------------------------------------ #
+    def _show_state(self, *args):
+        try:
+            raw_stars = self.get_setting(K_STARS, "<нет>")
+            raw_gram = self.get_setting(K_GRAM, "<нет>")
+            raw_spend = self.get_setting(K_SPEND, "<нет>")
+            info = (
+                "get_setting Stars: %r\n"
+                "get_setting GRAM: %r\n"
+                "Списывать: %r\n\n"
+                "Расчёт Stars: %s\n"
+                "Расчёт GRAM: %s\n\n"
+                "Пунктов меню: %d\n"
+                "Ошибка загрузки: %s"
+                % (
+                    raw_stars,
+                    raw_gram,
+                    raw_spend,
+                    self._fmt_stars(self._stars()),
+                    self._fmt_gram(self._gram()),
+                    len(getattr(self, "_menu_ids", []) or []),
+                    (getattr(self, "_load_error", "") or "нет"),
+                )
+            )
+            builder = self._dialog()
+            if builder is None:
+                self._toast_info(info.replace("\n", " | ")[:300])
+                return
+            builder.set_title("Состояние плагина")
+            builder.set_message(info)
+            builder.set_positive_button("ОК", lambda b, w: b.dismiss())
+            builder.show()
+            builder.set_cancelable(True)
+        except Exception as exc:
+            try:
+                self._toast_info("Диагностика не удалась: %s: %s" % (type(exc).__name__, exc))
+            except Exception:
+                pass
+
     def _balance_page(self) -> List[Any]:
         return [
             Header(text="Визуальный баланс"),
@@ -410,10 +454,10 @@ class VisualGiftsPlugin(BasePlugin):
     def _topup_page(self) -> List[Any]:
         return [
             Header(text="Пополнить баланс"),
-            Text(text="+100 Stars", icon="msg_edit", accent=True, on_click=lambda v: self._add_stars(100)),
-            Text(text="+1 000 Stars", icon="msg_edit", accent=True, on_click=lambda v: self._add_stars(1000)),
-            Text(text="+1 GRAM", icon="msg_edit", accent=True, on_click=lambda v: self._add_gram(1.0)),
-            Text(text="+10 GRAM", icon="msg_edit", accent=True, on_click=lambda v: self._add_gram(10.0)),
+            Text(text="+100 Stars", icon="msg_edit", accent=True, on_click=lambda *a: self._add_stars(100)),
+            Text(text="+1 000 Stars", icon="msg_edit", accent=True, on_click=lambda *a: self._add_stars(1000)),
+            Text(text="+1 GRAM", icon="msg_edit", accent=True, on_click=lambda *a: self._add_gram(1.0)),
+            Text(text="+10 GRAM", icon="msg_edit", accent=True, on_click=lambda *a: self._add_gram(10.0)),
             Divider(),
             Text(text="Сбросить баланс", icon="msg_error", red=True, on_click=self._reset_balance),
         ]
@@ -432,7 +476,7 @@ class VisualGiftsPlugin(BasePlugin):
         except Exception:
             self.logger.exception("add gram failed")
 
-    def _reset_balance(self, view=None):
+    def _reset_balance(self, *args):
         try:
             self.set_setting(K_STARS, str(DEFAULT_STARS), reload_settings=False)
             self.set_setting(K_GRAM, self._fmt_gram(DEFAULT_GRAM), reload_settings=True)
@@ -466,7 +510,7 @@ class VisualGiftsPlugin(BasePlugin):
         self._history.insert(0, {"title": title, "sub": sub, "ts": int(time.time())})
         self._save_history()
 
-    def _clear_history(self, view=None):
+    def _clear_history(self, *args):
         self._history = []
         self.set_setting(K_HISTORY, "")
         self._toast_info("История очищена")
@@ -656,7 +700,7 @@ class VisualGiftsPlugin(BasePlugin):
             ),
         ]
 
-    def _add_one_shard(self, view=None):
+    def _add_one_shard(self, *args):
         try:
             self.set_setting("gift_fragments", str(self._gift_pool() + 1), reload_settings=True)
             self._toast_ok("Осколков подарков: %d" % (self._gift_pool() + 1))
@@ -711,7 +755,7 @@ class VisualGiftsPlugin(BasePlugin):
         result = [x for x in self._inventory if int(x.get("slot", 0) or 0) > 0]
         return sorted(result, key=lambda x: int(x.get("slot", 0) or 0))
 
-    def _show_profile_showcase(self, view=None):
+    def _show_profile_showcase(self, *args):
         shown = self._nft_in_profile()
         builder = self._dialog()
         if builder is None:
@@ -734,7 +778,7 @@ class VisualGiftsPlugin(BasePlugin):
     # ------------------------------------------------------------------ #
     # Crafting
     # ------------------------------------------------------------------ #
-    def _craft_nft_click(self, view=None):
+    def _craft_nft_click(self, *args):
         need_gifts = max(1, self._int_setting(K_NFT_CRAFT_COST, DEFAULT_NFT_CRAFT_COST))
         need_nft = max(0, self._int_setting(K_NFT_CRAFT_ITEMS, DEFAULT_NFT_CRAFT_ITEMS))
         if self._gift_pool() < need_gifts:
@@ -789,10 +833,10 @@ class VisualGiftsPlugin(BasePlugin):
     # ------------------------------------------------------------------ #
     # NFT purchase
     # ------------------------------------------------------------------ #
-    def _buy_nft_click(self, view=None):
+    def _buy_nft_click(self, *args):
         self._buy_nft(install=False)
 
-    def _buy_nft_install_click(self, view=None):
+    def _buy_nft_install_click(self, *args):
         self._buy_nft(install=True)
 
     def _buy_nft(self, install: bool):
@@ -944,10 +988,13 @@ class VisualGiftsPlugin(BasePlugin):
         try:
             dialog_id = context.get("dialog_id")
             target = self._target_name(context)
-            self.logger.info("gift menu: target=%s", target)
+            self._toast_info("Меню: %s | ключи: %s" % (target, ",".join(list(context.keys())[:8])))
             self._open_gift_dialog(dialog_id, target)
-        except Exception:
-            self.logger.exception("gift menu failed")
+        except Exception as exc:
+            try:
+                self._toast_info("Ошибка меню: %s: %s" % (type(exc).__name__, exc))
+            except Exception:
+                pass
 
     def _on_menu_nft(self, context: Dict[str, Any]):
         try:
