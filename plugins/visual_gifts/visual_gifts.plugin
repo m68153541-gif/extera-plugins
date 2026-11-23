@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.8.1"
+__version__ = "1.9.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -256,9 +256,16 @@ class VisualGiftsPlugin(BasePlugin):
 
         title = ""
         number = None
+        sticker = None
         for a in list(param.args):
             if a is None:
                 continue
+            try:
+                st = getattr(a, "sticker", None)
+                if sticker is None and st is not None:
+                    sticker = st
+            except Exception:
+                pass
             try:
                 if not title and hasattr(a, "title"):
                     title = str(getattr(a, "title") or "")
@@ -314,15 +321,35 @@ class VisualGiftsPlugin(BasePlugin):
                 except Exception:
                     continue
 
+        caption = "🎁 Вы приобрели подарок: %s\nСписано: %s\nОстаток: %s Stars" % (
+            label,
+            self._price_text(spent) if spent else "0",
+            self._fmt_stars(self._stars()),
+        )
+        sent = False
         try:
-            if dialog_id is not None:
-                self._send_text(
-                    dialog_id,
-                    "Вы приобрели подарок: %s\nСписано: %s\nОстаток: %s Stars"
-                    % (label, self._price_text(spent) if spent else "0", self._fmt_stars(self._stars())),
-                )
+            if dialog_id is not None and sticker is not None:
+                from client_utils import send_message
+
+                send_message({"peer": dialog_id, "document": sticker, "caption": caption})
+                sent = True
         except Exception:
-            pass
+            sent = False
+        if not sent:
+            try:
+                if dialog_id is not None:
+                    from client_utils import send_text
+
+                    send_text(dialog_id, caption)
+                    sent = True
+            except Exception:
+                sent = False
+        if not sent:
+            try:
+                if dialog_id is not None:
+                    self._send_text(dialog_id, caption)
+            except Exception:
+                pass
 
         try:
             self._toast_ok(
