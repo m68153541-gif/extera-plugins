@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -106,10 +106,13 @@ class VisualGiftsPlugin(BasePlugin):
         self._inventory: List[Dict[str, Any]] = []
         self._load_error = ""
         self._menu_ids = []
+        self._hook_status = []
+        self._hooks = []
         try:
             self._load_history()
             self._load_inventory()
             self._register_menus()
+            self._install_native_hooks()
         except Exception as exc:
             self._load_error = "%s: %s" % (type(exc).__name__, exc)
             try:
@@ -121,6 +124,146 @@ class VisualGiftsPlugin(BasePlugin):
                 self._toast_info("Visual Gifts: ошибка — " + self._load_error[:150])
             else:
                 self._toast_ok("Visual Gifts загружен")
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Native hooks: replace Stars/TON balance in Telegram UI
+    # ------------------------------------------------------------------ #
+    def _install_native_hooks(self):
+        try:
+            from base_plugin import MethodHook, MethodReplacement
+            from hook_utils import find_class
+        except Exception as exc:
+            self._hook_status.append("import: %s" % exc)
+            return
+
+        plugin = self
+        try:
+            StarsController = find_class("org.telegram.ui.Stars.StarsController")
+        except Exception:
+            StarsController = None
+        if StarsController is None:
+            self._hook_status.append("StarsController: не найден")
+            return
+
+        try:
+            JBoolean = find_class("java.lang.Boolean")
+            Runnable = find_class("java.lang.Runnable")
+            StarsAmount = find_class("org.telegram.tgnet.tl.TL_stars$StarsAmount")
+        except Exception as exc:
+            self._hook_status.append("classes: %s" % exc)
+            return
+
+        def is_ton(inst):
+            try:
+                f = inst.getClass().getDeclaredField("ton")
+                f.setAccessible(True)
+                return bool(f.getBoolean(inst))
+            except Exception:
+                return False
+
+        def local_amount(inst):
+            value = plugin._gram() if is_ton(inst) else plugin._stars()
+            try:
+                return StarsAmount.ofStars(int(value))
+            except Exception:
+                return None
+
+        class BalanceReplacement(MethodReplacement):
+            def replace_hooked_method(self, param):
+                try:
+                    amt = local_amount(param.thisObject)
+                    if amt is not None:
+                        return amt
+                except Exception:
+                    pass
+                try:
+                    return StarsAmount.ofStars(0)
+                except Exception:
+                    return None
+
+        class UpdateBalanceHook(MethodHook):
+            def after_hooked_method(self, param):
+                try:
+                    amt = local_amount(param.thisObject)
+                    if amt is not None:
+                        param.thisObject.balance = amt
+                except Exception:
+                    pass
+
+        class PurchaseHook(MethodHook):
+            def before_hooked_method(self, param):
+                try:
+                    param.setResult(None)
+                except Exception:
+                    pass
+                try:
+                    plugin._on_visual_purchase(param)
+                except Exception:
+                    pass
+
+        try:
+            m = StarsController.getDeclaredMethod(
+                "getBalance", JBoolean.TYPE, Runnable, JBoolean.TYPE
+            )
+            m.setAccessible(True)
+            self._hooks.append(self.hook_method(m, BalanceReplacement()))
+            self._hook_status.append("getBalance: ок")
+        except Exception as exc:
+            self._hook_status.append("getBalance: %s" % type(exc).__name__)
+
+        try:
+            m2 = StarsController.getDeclaredMethod("updateBalance", StarsAmount)
+            m2.setAccessible(True)
+            self._hooks.append(self.hook_method(m2, UpdateBalanceHook()))
+            self._hook_status.append("updateBalance: ок")
+        except Exception as exc:
+            self._hook_status.append("updateBalance: %s" % type(exc).__name__)
+
+        for name in ("buyGift", "buyStarGift", "buyPremiumGift", "buyResellingGift"):
+            try:
+                res = self.hook_all_methods(StarsController, name, PurchaseHook())
+                if res:
+                    self._hooks.extend(res)
+                    self._hook_status.append("%s: ок" % name)
+                else:
+                    self._hook_status.append("%s: пусто" % name)
+            except Exception as exc:
+                self._hook_status.append("%s: %s" % (name, type(exc).__name__))
+
+    def _on_visual_purchase(self, param):
+        price = 0
+        try:
+            args = list(param.args)
+            for a in args:
+                if a is not None and hasattr(a, "stars"):
+                    try:
+                        price = int(getattr(a, "stars") or 0)
+                        break
+                    except Exception:
+                        pass
+            if not price:
+                price = max(0, self._int_setting(K_PRICE_STARS, DEFAULT_PRICE_STARS))
+            spent = self._spend_amount(price, 0.0, K_SPEND)
+            if spent is not None:
+                self._push_history("Покупка подарка", "−" + self._price_text(spent))
+        except Exception:
+            pass
+
+        for a in reversed(list(param.args)):
+            if a is not None and hasattr(a, "run"):
+                try:
+                    a.run(True, None)
+                    break
+                except Exception:
+                    continue
+
+        try:
+            self._toast_ok(
+                "Покупка визуальная · баланс: %s Stars"
+                % self._fmt_stars(self._stars())
+            )
         except Exception:
             pass
 
@@ -581,7 +724,8 @@ class VisualGiftsPlugin(BasePlugin):
                 "Расчёт Stars: %s\n"
                 "Расчёт GRAM: %s\n\n"
                 "Пунктов меню: %d\n"
-                "Ошибка загрузки: %s"
+                "Ошибка загрузки: %s\n\n"
+                "Хуки: %s"
                 % (
                     raw_stars,
                     raw_gram,
@@ -590,6 +734,7 @@ class VisualGiftsPlugin(BasePlugin):
                     self._fmt_gram(self._gram()),
                     len(getattr(self, "_menu_ids", []) or []),
                     (getattr(self, "_load_error", "") or "нет"),
+                    "; ".join(getattr(self, "_hook_status", []) or ["нет"]),
                 )
             )
             builder = self._dialog()
