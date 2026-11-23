@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.7.0"
+__version__ = "1.7.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -132,7 +132,7 @@ class VisualGiftsPlugin(BasePlugin):
     # ------------------------------------------------------------------ #
     def _install_native_hooks(self):
         try:
-            from base_plugin import MethodHook, MethodReplacement
+            from base_plugin import MethodHook
             from hook_utils import find_class
         except Exception as exc:
             self._hook_status.append("import: %s" % exc)
@@ -148,12 +148,10 @@ class VisualGiftsPlugin(BasePlugin):
             return
 
         try:
-            JBoolean = find_class("java.lang.Boolean")
-            Runnable = find_class("java.lang.Runnable")
             StarsAmount = find_class("org.telegram.tgnet.tl.TL_stars$StarsAmount")
         except Exception as exc:
-            self._hook_status.append("classes: %s" % exc)
-            return
+            self._hook_status.append("StarsAmount: %s" % exc)
+            StarsAmount = None
 
         def is_ton(inst):
             try:
@@ -163,34 +161,46 @@ class VisualGiftsPlugin(BasePlugin):
             except Exception:
                 return False
 
-        def local_amount(inst):
-            value = plugin._gram() if is_ton(inst) else plugin._stars()
+        def local_value(inst):
             try:
-                return StarsAmount.ofStars(int(value))
+                return int(plugin._gram() if is_ton(inst) else plugin._stars())
             except Exception:
-                return None
+                return 0
 
-        class BalanceReplacement(MethodReplacement):
-            def replace_hooked_method(self, param):
+        class BalanceAfterHook(MethodHook):
+            def after_hooked_method(self, param):
                 try:
-                    amt = local_amount(param.thisObject)
-                    if amt is not None:
-                        return amt
+                    res = param.getResult()
+                    if res is None or StarsAmount is None:
+                        return
+                    if not hasattr(res, "amount"):
+                        return
+                    param.setResult(StarsAmount.ofStars(local_value(param.thisObject)))
                 except Exception:
                     pass
-                try:
-                    return StarsAmount.ofStars(0)
-                except Exception:
-                    return None
 
         class UpdateBalanceHook(MethodHook):
             def after_hooked_method(self, param):
                 try:
-                    amt = local_amount(param.thisObject)
-                    if amt is not None:
-                        param.thisObject.balance = amt
+                    if StarsAmount is None:
+                        return
+                    param.thisObject.balance = StarsAmount.ofStars(local_value(param.thisObject))
                 except Exception:
                     pass
+
+        for name, handler in (
+            ("getBalance", BalanceAfterHook),
+            ("updateBalance", UpdateBalanceHook),
+        ):
+            try:
+                res = self.hook_all_methods(StarsController, name, handler())
+                if res:
+                    self._hooks.extend(res)
+                    self._hook_status.append("%s: ок (%d)" % (name, len(res)))
+                else:
+                    self._hook_status.append("%s: нет метода" % name)
+            except Exception as exc:
+                self._hook_status.append("%s: %s" % (name, type(exc).__name__))
 
         class PurchaseHook(MethodHook):
             def before_hooked_method(self, param):
@@ -203,40 +213,14 @@ class VisualGiftsPlugin(BasePlugin):
                 except Exception:
                     pass
 
-        def hook_by_shape(name, param_count, handler):
-            found = 0
-            try:
-                methods = StarsController.getDeclaredMethods()
-            except Exception as exc:
-                self._hook_status.append("%s: %s" % (name, type(exc).__name__))
-                return
-            for m in methods:
-                try:
-                    if str(m.getName()) != name:
-                        continue
-                    if int(m.getParameterCount()) != param_count:
-                        continue
-                    m.setAccessible(True)
-                    self._hooks.append(self.hook_method(m, handler()))
-                    found += 1
-                except Exception:
-                    continue
-            if found:
-                self._hook_status.append("%s: ок (%d)" % (name, found))
-            else:
-                self._hook_status.append("%s: нет метода" % name)
-
-        hook_by_shape("getBalance", 3, BalanceReplacement)
-        hook_by_shape("updateBalance", 1, UpdateBalanceHook)
-
         for name in ("buyGift", "buyStarGift", "buyPremiumGift", "buyResellingGift"):
             try:
                 res = self.hook_all_methods(StarsController, name, PurchaseHook())
                 if res:
                     self._hooks.extend(res)
-                    self._hook_status.append("%s: ок" % name)
+                    self._hook_status.append("%s: ок (%d)" % (name, len(res)))
                 else:
-                    self._hook_status.append("%s: пусто" % name)
+                    self._hook_status.append("%s: нет метода" % name)
             except Exception as exc:
                 self._hook_status.append("%s: %s" % (name, type(exc).__name__))
 
@@ -633,6 +617,7 @@ class VisualGiftsPlugin(BasePlugin):
                 "Расчёт GRAM: %s\n\n"
                 "Пунктов меню: %d\n"
                 "Ошибка загрузки: %s\n\n"
+                "Последнее пополнение: %s\n\n"
                 "Хуки: %s"
                 % (
                     raw_stars,
@@ -642,6 +627,7 @@ class VisualGiftsPlugin(BasePlugin):
                     self._fmt_gram(self._gram()),
                     len(getattr(self, "_menu_ids", []) or []),
                     (getattr(self, "_load_error", "") or "нет"),
+                    (getattr(self, "_last_action", "") or "не было"),
                     "; ".join(getattr(self, "_hook_status", []) or ["нет"]),
                 )
             )
@@ -683,15 +669,25 @@ class VisualGiftsPlugin(BasePlugin):
 
     def _add_stars(self, amount: int):
         try:
-            self.set_setting(K_STARS, str(self._stars() + int(amount)), reload_settings=True)
-            self._toast_ok("Зачислено %s Stars" % self._fmt_stars(amount))
+            before = self._stars()
+            after = before + int(amount)
+            self.set_setting(K_STARS, str(after), reload_settings=True)
+            check = self.get_setting(K_STARS, "<нет>")
+            self._last_action = "Stars %s -> %s (в настройках: %r)" % (
+                self._fmt_stars(before), self._fmt_stars(after), check)
+            self._toast_ok("Stars: %s -> %s" % (self._fmt_stars(before), self._fmt_stars(after)))
         except Exception:
             self.logger.exception("add stars failed")
 
     def _add_gram(self, amount: float):
         try:
-            self.set_setting(K_GRAM, self._fmt_gram(self._gram() + float(amount)), reload_settings=True)
-            self._toast_ok("Зачислено %s GRAM" % self._fmt_gram(amount))
+            before = self._gram()
+            after = before + float(amount)
+            self.set_setting(K_GRAM, self._fmt_gram(after), reload_settings=True)
+            check = self.get_setting(K_GRAM, "<нет>")
+            self._last_action = "GRAM %s -> %s (в настройках: %r)" % (
+                self._fmt_gram(before), self._fmt_gram(after), check)
+            self._toast_ok("GRAM: %s -> %s" % (self._fmt_gram(before), self._fmt_gram(after)))
         except Exception:
             self.logger.exception("add gram failed")
 
