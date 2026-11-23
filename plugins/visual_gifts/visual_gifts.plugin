@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -82,6 +82,15 @@ NFT_MODELS = [
 ]
 NFT_BACKDROPS = ["Небо", "Золото", "Ночь", "Лава", "Лёд", "Сад"]
 NFT_PATTERNS = ["", "Звёзды", "Полосы", "Блёстки", "Клетка"]
+
+GIFT_STORE = [
+    ("Роза", 50, 0.5),
+    ("Мишка", 150, 1.5),
+    ("Кристалл", 500, 5.0),
+    ("Трофей", 1500, 15.0),
+    ("Сердце", 300, 3.0),
+    ("Корона", 5000, 50.0),
+]
 
 
 def _rarity_weights() -> List[float]:
@@ -147,6 +156,163 @@ class VisualGiftsPlugin(BasePlugin):
         except Exception as exc:
             if not self._load_error:
                 self._load_error = "menu nft: %s: %s" % (type(exc).__name__, exc)
+        for menu_type, text, handler in (
+            (MenuItemType.DRAWER_MENU, "Мои звёзды и GRAM", self._on_main_menu),
+            (MenuItemType.MAIN_MENU, "Мои звёзды и GRAM", self._on_main_menu),
+        ):
+            try:
+                self._menu_ids.append(
+                    self.add_menu_item(
+                        MenuItemData(
+                            menu_type=menu_type,
+                            text=text,
+                            subtext="Локальный баланс и маркет",
+                            icon="msg_settings",
+                            on_click=handler,
+                            priority=4,
+                        )
+                    )
+                )
+            except Exception as exc:
+                if not self._load_error:
+                    self._load_error = "menu main: %s: %s" % (type(exc).__name__, exc)
+
+    # ------------------------------------------------------------------ #
+    # Main menu (app drawer) entry
+    # ------------------------------------------------------------------ #
+    def _on_main_menu(self, *args):
+        try:
+            self._open_stars_menu()
+        except Exception as exc:
+            try:
+                self._toast_info("Ошибка меню: %s: %s" % (type(exc).__name__, exc))
+            except Exception:
+                pass
+
+    def _open_stars_menu(self):
+        builder = self._dialog()
+        if builder is None:
+            self._toast_info("Не удалось открыть окно")
+            return
+        builder.set_title("Мои звёзды и GRAM")
+        builder.set_message(
+            "Баланс: %s Stars · %s GRAM\nПодарков в истории: %d · NFT: %d"
+            % (
+                self._fmt_stars(self._stars()),
+                self._fmt_gram(self._gram()),
+                len(self._history),
+                len(self._inventory),
+            )
+        )
+        options = [
+            "Пополнить на 500 Stars",
+            "Пополнить на 10 GRAM",
+            "Магазин подарков",
+            "Магазин NFT",
+            "Мой инвентарь",
+            "История",
+        ]
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            if which == 0:
+                self._add_stars(500)
+            elif which == 1:
+                self._add_gram(10.0)
+            elif which == 2:
+                self._open_gift_market()
+            elif which == 3:
+                self._open_nft_market()
+            elif which == 4:
+                self._open_inventory_dialog()
+            else:
+                self._open_history_dialog()
+
+        builder.set_items(options, on_pick)
+        builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _open_gift_market(self):
+        builder = self._dialog()
+        if builder is None:
+            return
+        names = ["%s — %s Stars" % (name, self._fmt_stars(price)) for name, price, _p in GIFT_STORE]
+        builder.set_title("Магазин подарков")
+        builder.set_message("Баланс: %s Stars · %s GRAM" % (self._fmt_stars(self._stars()), self._fmt_gram(self._gram())))
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            self._market_buy(GIFT_STORE[which])
+
+        builder.set_items(names, on_pick)
+        builder.set_negative_button("Назад", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _market_buy(self, entry):
+        try:
+            name, price_stars, price_gram = entry
+            spent = self._spend_amount(int(price_stars), float(price_gram), K_SPEND)
+            if spent is None:
+                self._toast_info("Недостаточно баланса")
+                return
+            self._push_history("Покупка: " + name, "−" + self._price_text(spent))
+            builder = self._dialog()
+            if builder is None:
+                self._toast_ok("Куплено: " + name)
+                return
+            builder.set_title("Подарок куплен")
+            builder.set_message(
+                "%s\n\nСписано: %s\nОстаток: %s Stars · %s GRAM"
+                % (name, self._price_text(spent), self._fmt_stars(self._stars()), self._fmt_gram(self._gram()))
+            )
+            builder.set_positive_button("Готово", lambda b, w: b.dismiss())
+            builder.show()
+            builder.set_cancelable(True)
+        except Exception as exc:
+            try:
+                self._toast_info("Ошибка покупки: %s: %s" % (type(exc).__name__, exc))
+            except Exception:
+                pass
+
+    def _open_nft_market(self):
+        self._buy_nft(install=False)
+
+    def _open_inventory_dialog(self):
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Мой инвентарь")
+        if not self._inventory:
+            builder.set_message("Пока пусто — купите NFT в магазине.")
+            builder.set_positive_button("ОК", lambda b, w: b.dismiss())
+            builder.show()
+            builder.set_cancelable(True)
+            return
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            self._nft_actions(self._inventory[which].get("id"))
+
+        builder.set_items([self._nft_label(x) for x in self._inventory[:20]], on_pick)
+        builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _open_history_dialog(self):
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("История")
+        if not self._history:
+            builder.set_message("Пока пусто.")
+        else:
+            lines = ["%s — %s" % (h.get("title", ""), h.get("sub", "")) for h in self._history[:25]]
+            builder.set_message("\n".join(lines))
+        builder.set_positive_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
 
     def on_plugin_unload(self):
         for item_id in getattr(self, "_menu_ids", []):
