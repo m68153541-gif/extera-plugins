@@ -8,7 +8,7 @@
       "name": "Визуальные подарки и NFT",
       "description": "Визуальный баланс **Stars** и **GRAM** в меню Telegram, визуальные покупки подарков",
       "author": "MultiTool",
-      "version": "1.8.0",
+      "version": "1.8.1",
       "icon": "exteraPlugins/1",
       "app_version": ">=12.5.1",
       "sdk_version": ">=1.4.4.3",
@@ -17,9 +17,9 @@
         "chats"
       ],
       "file": "plugins/visual_gifts/visual_gifts.plugin",
-      "sha256": "f20700e5114b3959d0291662b8ad15b21f3ac095cc126fa61b217f8c5dfa5af0",
-      "size": 60501,
-      "updated_at": "2026-11-23T13:40:19Z"
+      "sha256": "b9296825c620601c13a6fa2d2db5bc8676e29fdefc29e23857d27df7d8b9a417",
+      "size": 60987,
+      "updated_at": "2026-11-23T13:48:23Z"
     }
   ]
 }
