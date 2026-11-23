@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -327,14 +327,6 @@ class VisualGiftsPlugin(BasePlugin):
             self._fmt_stars(self._stars()),
         )
         sent = False
-        try:
-            if dialog_id is not None and sticker is not None:
-                from client_utils import send_message
-
-                send_message({"peer": dialog_id, "document": sticker, "caption": caption})
-                sent = True
-        except Exception:
-            sent = False
         if not sent:
             try:
                 if dialog_id is not None:
@@ -351,6 +343,10 @@ class VisualGiftsPlugin(BasePlugin):
             except Exception:
                 pass
 
+        try:
+            self._show_gift_card(label, sticker, spent)
+        except Exception:
+            pass
         try:
             self._toast_ok(
                 "Подарок: %s · остаток %s Stars" % (label, self._fmt_stars(self._stars()))
@@ -460,6 +456,60 @@ class VisualGiftsPlugin(BasePlugin):
         builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
         builder.show()
         builder.set_cancelable(True)
+
+    def _show_gift_card(self, label, sticker, spent):
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Подарок куплен")
+        builder.set_message(
+            "%s\n\nСписано: %s\nОстаток: %s Stars"
+            % (label, self._price_text(spent) if spent else "0", self._fmt_stars(self._stars()))
+        )
+        view = None
+        try:
+            view = self._make_sticker_view(sticker)
+        except Exception:
+            view = None
+        if view is not None:
+            try:
+                builder.set_view(view, 260)
+            except Exception:
+                pass
+        builder.set_positive_button("Красиво", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _make_sticker_view(self, sticker):
+        if sticker is None:
+            return None
+        from android.view import Gravity
+        from android.widget import LinearLayout
+        from org.telegram.messenger import AndroidUtilities, ImageLocation
+        from org.telegram.ui.Components import BackupImageView, LayoutHelper
+
+        fragment = get_last_fragment()
+        if fragment is None:
+            return None
+        ctx = fragment.getParentActivity()
+        if ctx is None:
+            return None
+
+        layout = LinearLayout(ctx)
+        layout.setOrientation(LinearLayout.VERTICAL)
+        layout.setGravity(Gravity.CENTER)
+        layout.setPadding(
+            AndroidUtilities.dp(12), AndroidUtilities.dp(12),
+            AndroidUtilities.dp(12), AndroidUtilities.dp(12),
+        )
+        image = BackupImageView(ctx)
+        try:
+            loc = ImageLocation.getForDocument(sticker)
+            image.setImage(loc, None, None, None, 0)
+        except Exception:
+            pass
+        layout.addView(image, LayoutHelper.createLinear(180, 180, Gravity.CENTER))
+        return layout
 
     def _open_gifts_dialog(self):
         builder = self._dialog()
