@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.8.0"
+__version__ = "1.8.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -285,9 +285,11 @@ class VisualGiftsPlugin(BasePlugin):
                         pass
             if not price:
                 price = max(0, self._int_setting(K_PRICE_STARS, DEFAULT_PRICE_STARS))
-            spent = self._spend_amount(price, 0.0, K_SPEND)
+            spent = self._spend_amount(price, 0.0, K_SPEND, respect_switch=False)
             if spent is not None:
                 self._push_history("Покупка: " + label, "−" + self._price_text(spent))
+            else:
+                self._push_history("Покупка без списания: " + label, "нет баланса")
         except Exception:
             pass
 
@@ -314,12 +316,18 @@ class VisualGiftsPlugin(BasePlugin):
 
         try:
             if dialog_id is not None:
-                self._send_text(dialog_id, "Вы приобрели подарок: %s" % label)
+                self._send_text(
+                    dialog_id,
+                    "Вы приобрели подарок: %s\nСписано: %s\nОстаток: %s Stars"
+                    % (label, self._price_text(spent) if spent else "0", self._fmt_stars(self._stars())),
+                )
         except Exception:
             pass
 
         try:
-            self._toast_ok("Вы приобрели подарок: %s" % label)
+            self._toast_ok(
+                "Подарок: %s · остаток %s Stars" % (label, self._fmt_stars(self._stars()))
+            )
         except Exception:
             pass
 
@@ -1229,9 +1237,10 @@ class VisualGiftsPlugin(BasePlugin):
     # ------------------------------------------------------------------ #
     # Spending
     # ------------------------------------------------------------------ #
-    def _spend_amount(self, price_stars: int, price_gram: float, switch_key: str):
-        if (not self.get_setting(K_SPEND, True)) or (not self.get_setting(switch_key, True)):
-            return (0, 0.0)
+    def _spend_amount(self, price_stars: int, price_gram: float, switch_key: str, respect_switch: bool = False):
+        if respect_switch:
+            if (not self.get_setting(K_SPEND, True)) or (not self.get_setting(switch_key, True)):
+                return (0, 0.0)
         mode = min(2, max(0, self._int_setting(K_CUR, 0)))
         stars = self._stars()
         gram = self._gram()
