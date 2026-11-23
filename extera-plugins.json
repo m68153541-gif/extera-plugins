@@ -8,7 +8,7 @@
       "name": "Визуальные подарки и NFT",
       "description": "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**",
       "author": "MultiTool",
-      "version": "1.5.0",
+      "version": "1.6.0",
       "icon": "exteraPlugins/1",
       "app_version": ">=12.5.1",
       "sdk_version": ">=1.4.4.3",
@@ -17,9 +17,9 @@
         "chats"
       ],
       "file": "plugins/visual_gifts/visual_gifts.plugin",
-      "sha256": "76b314543f3c09d17aa9a41e9f4c1f0c4c9d7561d62f9698b6c62d8a9b8865bf",
-      "size": 55536,
-      "updated_at": "2026-11-23T12:25:20Z"
+      "sha256": "5449033b3dc322005668583a4dc88c8c1cef1df2c11e5f81ef0536b1549c3dc8",
+      "size": 61002,
+      "updated_at": "2026-11-23T12:30:41Z"
     }
   ]
 }
