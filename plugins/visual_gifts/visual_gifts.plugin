@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.7.1"
+__version__ = "1.8.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -108,6 +108,15 @@ class VisualGiftsPlugin(BasePlugin):
         self._menu_ids = []
         self._hook_status = []
         self._hooks = []
+        self._gifts = []
+        try:
+            raw_g = self.get_setting("purchased_gifts", "") or ""
+            if raw_g:
+                data = json.loads(raw_g)
+                if isinstance(data, list):
+                    self._gifts = [x for x in data if isinstance(x, dict)]
+        except Exception:
+            self._gifts = []
         try:
             self._load_history()
             self._load_inventory()
@@ -225,10 +234,49 @@ class VisualGiftsPlugin(BasePlugin):
                 self._hook_status.append("%s: %s" % (name, type(exc).__name__))
 
     def _on_visual_purchase(self, param):
-        price = 0
+        method_name = ""
         try:
-            args = list(param.args)
-            for a in args:
+            method_name = str(param.method.getName())
+        except Exception:
+            pass
+
+        idx_map = {
+            "buyGift": 2,
+            "buyStarGift": 3,
+            "buyPremiumGift": 0,
+            "buyResellingGift": 2,
+        }
+        dialog_id = None
+        di = idx_map.get(method_name)
+        try:
+            if di is not None and di < len(param.args):
+                dialog_id = param.args[di]
+        except Exception:
+            dialog_id = None
+
+        title = ""
+        number = None
+        for a in list(param.args):
+            if a is None:
+                continue
+            try:
+                if not title and hasattr(a, "title"):
+                    title = str(getattr(a, "title") or "")
+            except Exception:
+                pass
+            try:
+                if number is None and hasattr(a, "id"):
+                    number = int(getattr(a, "id") or 0)
+            except Exception:
+                pass
+
+        if not title:
+            title = "Подарок"
+        label = "%s №%d" % (title, number) if number else title
+
+        try:
+            price = 0
+            for a in list(param.args):
                 if a is not None and hasattr(a, "stars"):
                     try:
                         price = int(getattr(a, "stars") or 0)
@@ -239,7 +287,20 @@ class VisualGiftsPlugin(BasePlugin):
                 price = max(0, self._int_setting(K_PRICE_STARS, DEFAULT_PRICE_STARS))
             spent = self._spend_amount(price, 0.0, K_SPEND)
             if spent is not None:
-                self._push_history("Покупка подарка", "−" + self._price_text(spent))
+                self._push_history("Покупка: " + label, "−" + self._price_text(spent))
+        except Exception:
+            pass
+
+        try:
+            entry = {
+                "title": title,
+                "number": number or 0,
+                "to": str(dialog_id),
+                "ts": int(time.time()),
+            }
+            self._gifts.insert(0, entry)
+            self._gifts = self._gifts[:100]
+            self.set_setting("purchased_gifts", json.dumps(self._gifts, ensure_ascii=False))
         except Exception:
             pass
 
@@ -252,10 +313,13 @@ class VisualGiftsPlugin(BasePlugin):
                     continue
 
         try:
-            self._toast_ok(
-                "Покупка визуальная · баланс: %s Stars"
-                % self._fmt_stars(self._stars())
-            )
+            if dialog_id is not None:
+                self._send_text(dialog_id, "Вы приобрели подарок: %s" % label)
+        except Exception:
+            pass
+
+        try:
+            self._toast_ok("Вы приобрели подарок: %s" % label)
         except Exception:
             pass
 
@@ -341,11 +405,9 @@ class VisualGiftsPlugin(BasePlugin):
         )
         options = [
             "Пополнить на 500 Stars",
+            "Пополнить на 5 000 Stars",
             "Пополнить на 10 GRAM",
-            "Магазин подарков",
-            "Магазин NFT",
-            "Мой инвентарь",
-            "История",
+            "Мои подарки",
         ]
 
         def on_pick(bld, which):
@@ -353,18 +415,30 @@ class VisualGiftsPlugin(BasePlugin):
             if which == 0:
                 self._add_stars(500)
             elif which == 1:
-                self._add_gram(10.0)
+                self._add_stars(5000)
             elif which == 2:
-                self._open_gift_market()
-            elif which == 3:
-                self._open_nft_market()
-            elif which == 4:
-                self._open_inventory_dialog()
+                self._add_gram(10.0)
             else:
-                self._open_history_dialog()
+                self._open_gifts_dialog()
 
         builder.set_items(options, on_pick)
         builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _open_gifts_dialog(self):
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Мои подарки")
+        if not self._gifts:
+            builder.set_message("Пока нет купленных подарков.")
+        else:
+            lines = []
+            for g in self._gifts[:25]:
+                lines.append("%s - %s" % (g.get("title", "Подарок"), g.get("number", 0)))
+            builder.set_message("\n".join(lines))
+        builder.set_positive_button("Закрыть", lambda b, w: b.dismiss())
         builder.show()
         builder.set_cancelable(True)
 
