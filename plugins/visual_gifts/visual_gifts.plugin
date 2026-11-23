@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.11.1"
+__version__ = "1.12.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -255,7 +255,7 @@ class VisualGiftsPlugin(BasePlugin):
             dialog_id = None
 
         title = ""
-        number = None
+        gift_id = 0
         sticker = None
         for a in list(param.args):
             if a is None:
@@ -272,14 +272,15 @@ class VisualGiftsPlugin(BasePlugin):
             except Exception:
                 pass
             try:
-                if number is None and hasattr(a, "id"):
-                    number = int(getattr(a, "id") or 0)
+                if not gift_id and hasattr(a, "id"):
+                    gift_id = int(getattr(a, "id") or 0)
             except Exception:
                 pass
 
         if not title:
             title = "Подарок"
-        label = "%s №%d" % (title, number) if number else title
+        number = random.randint(1000, 9999)
+        label = "%s №%d" % (title, number)
 
         try:
             price = 0
@@ -327,25 +328,17 @@ class VisualGiftsPlugin(BasePlugin):
             self._fmt_stars(self._stars()),
         )
         injected = False
+        inj_err = ""
         try:
-            injected = self._inject_gift_message(dialog_id, sticker, title, number, price, caption)
-        except Exception:
-            injected = False
+            injected, inj_err = self._inject_gift_message(
+                dialog_id, sticker, title, number, price, caption
+            )
+        except Exception as exc:
+            injected, inj_err = False, "%s: %s" % (type(exc).__name__, exc)
 
-        sent = injected
-        if not sent:
+        if not injected:
             try:
-                if dialog_id is not None:
-                    from client_utils import send_text
-
-                    send_text(dialog_id, caption)
-                    sent = True
-            except Exception:
-                sent = False
-        if not sent:
-            try:
-                if dialog_id is not None:
-                    self._send_text(dialog_id, caption)
+                self._show_inject_error(inj_err)
             except Exception:
                 pass
 
@@ -461,19 +454,32 @@ class VisualGiftsPlugin(BasePlugin):
 
     def _inject_gift_message(self, dialog_id, sticker, title, number, stars, caption):
         if dialog_id is None:
-            return False
-        from org.telegram.messenger import MessagesController, UserConfig
-        from org.telegram.tgnet import TLRPC
+            return False, "нет dialog_id"
+        try:
+            from org.telegram.messenger import MessagesController, UserConfig
+            from org.telegram.tgnet import TLRPC
+        except Exception as exc:
+            return False, "импорт: %s" % type(exc).__name__
 
         acc = int(UserConfig.selectedAccount)
         mc = MessagesController.getInstance(acc)
 
+        gift_cls = getattr(TLRPC, "TL_starGift", None) or getattr(TLRPC, "StarGift", None)
+        if gift_cls is None:
+            return False, "нет класса TL_starGift"
+        action_cls = getattr(TLRPC, "TL_messageActionStarGift", None)
+        if action_cls is None:
+            return False, "нет класса TL_messageActionStarGift"
+
         msg = TLRPC.TL_message()
-        msg.id = int(random.getrandbits(30)) or 1
+        msg.id = int(random.getrandbits(29)) + 1000
         msg.date = int(time.time())
         msg.out = True
-        msg.flags |= 1 << 8
         msg.message = ""
+        try:
+            msg.media = TLRPC.TL_messageMediaEmpty()
+        except Exception:
+            pass
 
         d = int(dialog_id)
         if d > 0:
@@ -494,9 +500,6 @@ class VisualGiftsPlugin(BasePlugin):
         except Exception:
             pass
 
-        gift_cls = getattr(TLRPC, "TL_starGift", None) or getattr(TLRPC, "StarGift", None)
-        if gift_cls is None:
-            return False
         gift = gift_cls()
         try:
             gift.id = int(number or 0)
@@ -510,13 +513,13 @@ class VisualGiftsPlugin(BasePlugin):
             gift.title = str(title or "Подарок")
         except Exception:
             pass
-        try:
-            if sticker is not None:
+        if sticker is not None:
+            try:
                 gift.sticker = sticker
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-        action = TLRPC.TL_messageActionStarGift()
+        action = action_cls()
         action.gift = gift
         msg.action = action
 
@@ -532,8 +535,37 @@ class VisualGiftsPlugin(BasePlugin):
         container.pts = 0
         container.pts_count = 0
 
-        mc.processUpdates(container, False)
-        return True
+        errors = []
+        try:
+            mc.processUpdates(container, False)
+            return True, ""
+        except Exception as exc:
+            errors.append("processUpdates: %s: %s" % (type(exc).__name__, exc))
+
+        try:
+            fn = getattr(mc, "addToViewsQueue", None)
+            if fn is not None:
+                fn(msg)
+                return True, ""
+            errors.append("нет addToViewsQueue")
+        except Exception as exc:
+            errors.append("addToViewsQueue: %s: %s" % (type(exc).__name__, exc))
+
+        return False, " | ".join(errors)
+
+    def _show_inject_error(self, err):
+        text = "Подарок не показан в чате: %s" % (err or "неизвестная ошибка")
+        try:
+            from ui.bulletin import BulletinHelper
+
+            BulletinHelper.show_info(text)
+            return
+        except Exception:
+            pass
+        try:
+            self._toast_ok(text)
+        except Exception:
+            pass
 
     def _show_gift_card(self, label, sticker, spent):
         builder = self._dialog()
