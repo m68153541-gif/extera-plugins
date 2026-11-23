@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -203,23 +203,31 @@ class VisualGiftsPlugin(BasePlugin):
                 except Exception:
                     pass
 
-        try:
-            m = StarsController.getDeclaredMethod(
-                "getBalance", JBoolean.TYPE, Runnable, JBoolean.TYPE
-            )
-            m.setAccessible(True)
-            self._hooks.append(self.hook_method(m, BalanceReplacement()))
-            self._hook_status.append("getBalance: ок")
-        except Exception as exc:
-            self._hook_status.append("getBalance: %s" % type(exc).__name__)
+        def hook_by_shape(name, param_count, handler):
+            found = 0
+            try:
+                methods = StarsController.getDeclaredMethods()
+            except Exception as exc:
+                self._hook_status.append("%s: %s" % (name, type(exc).__name__))
+                return
+            for m in methods:
+                try:
+                    if str(m.getName()) != name:
+                        continue
+                    if int(m.getParameterCount()) != param_count:
+                        continue
+                    m.setAccessible(True)
+                    self._hooks.append(self.hook_method(m, handler()))
+                    found += 1
+                except Exception:
+                    continue
+            if found:
+                self._hook_status.append("%s: ок (%d)" % (name, found))
+            else:
+                self._hook_status.append("%s: нет метода" % name)
 
-        try:
-            m2 = StarsController.getDeclaredMethod("updateBalance", StarsAmount)
-            m2.setAccessible(True)
-            self._hooks.append(self.hook_method(m2, UpdateBalanceHook()))
-            self._hook_status.append("updateBalance: ок")
-        except Exception as exc:
-            self._hook_status.append("updateBalance: %s" % type(exc).__name__)
+        hook_by_shape("getBalance", 3, BalanceReplacement)
+        hook_by_shape("updateBalance", 1, UpdateBalanceHook)
 
         for name in ("buyGift", "buyStarGift", "buyPremiumGift", "buyResellingGift"):
             try:
@@ -489,13 +497,7 @@ class VisualGiftsPlugin(BasePlugin):
 
     def _build_settings(self) -> List[Any]:
         return [
-            Header(text="Визуальный баланс"),
-            Text(
-                text="Показать состояние (диагностика)",
-                subtext="Нажмите, чтобы увидеть реальные значения",
-                icon="msg_info",
-                on_click=self._show_state,
-            ),
+            Header(text="Звёзды"),
             Input(
                 key=K_STARS,
                 text="Баланс Stars",
@@ -503,6 +505,14 @@ class VisualGiftsPlugin(BasePlugin):
                 subtext="Целое число, например 2500",
                 icon="msg_edit",
             ),
+            Text(text="Пополнить +100 Stars", icon="msg_edit", accent=True,
+                 on_click=lambda *a: self._add_stars(100)),
+            Text(text="Пополнить +1 000 Stars", icon="msg_edit", accent=True,
+                 on_click=lambda *a: self._add_stars(1000)),
+            Text(text="Пополнить +10 000 Stars", icon="msg_edit", accent=True,
+                 on_click=lambda *a: self._add_stars(10000)),
+            Divider(),
+            Header(text="GRAM"),
             Input(
                 key=K_GRAM,
                 text="Баланс GRAM",
@@ -510,118 +520,16 @@ class VisualGiftsPlugin(BasePlugin):
                 subtext="Дробное число, например 5.25",
                 icon="msg_edit",
             ),
-            Text(
-                text="Текущий баланс",
-                icon="msg_info",
-                create_sub_fragment=self._balance_page,
-            ),
-            Text(
-                text="Пополнить баланс",
-                icon="msg_edit",
-                create_sub_fragment=self._topup_page,
-            ),
-            Divider(),
-            Header(text="Подарки"),
-            Selector(
-                key=K_CUR,
-                text="Валюта списания (Смешанно = сначала Stars, затем GRAM)",
-                default=0,
-                items=CURRENCY_ITEMS,
-                icon="msg_list",
-            ),
-            Input(
-                key=K_PRICE_STARS,
-                text="Цена подарка, Stars",
-                default=str(DEFAULT_PRICE_STARS),
-                icon="msg_edit",
-            ),
-            Input(
-                key=K_PRICE_GRAM,
-                text="Цена подарка, GRAM",
-                default=str(DEFAULT_PRICE_GRAM),
-                icon="msg_edit",
-            ),
-            Switch(
-                key=K_SPEND,
-                text="Списывать с баланса",
-                default=True,
-                subtext="Выключено — подарки бесплатные",
-                icon="msg_settings",
-            ),
-            Divider(),
-            Header(text="NFT"),
-            Text(
-                text="Магазин NFT",
-                icon="msg_list",
-                create_sub_fragment=self._nft_shop_page,
-            ),
-            Text(
-                text="Мой инвентарь",
-                icon="msg_list",
-                create_sub_fragment=self._nft_inventory_page,
-            ),
-            Text(
-                text="Витрина в профиле",
-                icon="msg_info",
-                create_sub_fragment=self._nft_profile_page,
-            ),
-            Text(
-                text="Крафт NFT",
-                icon="msg_settings",
-                create_sub_fragment=self._nft_craft_page,
-            ),
-            Input(
-                key=K_NFT_PRICE_STARS,
-                text="Цена NFT, Stars",
-                default=str(DEFAULT_NFT_PRICE_STARS),
-                icon="msg_edit",
-            ),
-            Input(
-                key=K_NFT_PRICE_GRAM,
-                text="Цена NFT, GRAM",
-                default=str(DEFAULT_NFT_PRICE_GRAM),
-                icon="msg_edit",
-            ),
-            Input(
-                key=K_NFT_CRAFT_COST,
-                text="Крафт: нужно подарков",
-                default=str(DEFAULT_NFT_CRAFT_COST),
-                icon="msg_edit",
-            ),
-            Input(
-                key=K_NFT_CRAFT_ITEMS,
-                text="Крафт: нужно NFT",
-                default=str(DEFAULT_NFT_CRAFT_ITEMS),
-                icon="msg_edit",
-            ),
-            Input(
-                key=K_NFT_SLOTS,
-                text="Слотов в витрине профиля",
-                default=str(DEFAULT_NFT_SLOTS),
-                icon="msg_edit",
-            ),
-            Switch(
-                key=K_NFT_SPEND,
-                text="Списывать баланс за NFT",
-                default=True,
-                icon="msg_settings",
-            ),
+            Text(text="Пополнить +1 GRAM", icon="msg_edit", accent=True,
+                 on_click=lambda *a: self._add_gram(1.0)),
+            Text(text="Пополнить +10 GRAM", icon="msg_edit", accent=True,
+                 on_click=lambda *a: self._add_gram(10.0)),
             Divider(),
             Text(
-                text="История операций",
-                icon="msg_list",
-                create_sub_fragment=self._history_page,
-            ),
-            Text(
-                text="Очистить историю",
-                icon="msg_error",
-                red=True,
-                on_click=self._clear_history,
-            ),
-            Text(
-                text="Плагин ничего не покупает и не работает с блокчейном.",
-                subtext="Все NFT существуют только в этом плагине.",
+                text="Показать состояние (диагностика)",
+                subtext="Хуки и реальные значения",
                 icon="msg_info",
+                on_click=self._show_state,
             ),
         ]
 
