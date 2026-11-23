@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -326,7 +326,13 @@ class VisualGiftsPlugin(BasePlugin):
             self._price_text(spent) if spent else "0",
             self._fmt_stars(self._stars()),
         )
-        sent = False
+        injected = False
+        try:
+            injected = self._inject_gift_message(dialog_id, sticker, title, number, price, caption)
+        except Exception:
+            injected = False
+
+        sent = injected
         if not sent:
             try:
                 if dialog_id is not None:
@@ -343,10 +349,6 @@ class VisualGiftsPlugin(BasePlugin):
             except Exception:
                 pass
 
-        try:
-            self._show_gift_card(label, sticker, spent)
-        except Exception:
-            pass
         try:
             self._toast_ok(
                 "Подарок: %s · остаток %s Stars" % (label, self._fmt_stars(self._stars()))
@@ -456,6 +458,82 @@ class VisualGiftsPlugin(BasePlugin):
         builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
         builder.show()
         builder.set_cancelable(True)
+
+    def _inject_gift_message(self, dialog_id, sticker, title, number, stars, caption):
+        if dialog_id is None:
+            return False
+        from org.telegram.messenger import MessagesController, UserConfig
+        from org.telegram.tgnet import TLRPC
+
+        acc = int(UserConfig.selectedAccount)
+        mc = MessagesController.getInstance(acc)
+
+        msg = TLRPC.TL_message()
+        msg.id = int(random.getrandbits(30)) or 1
+        msg.date = int(time.time())
+        msg.out = True
+        msg.flags |= 1 << 8
+        msg.message = ""
+
+        d = int(dialog_id)
+        if d > 0:
+            peer = TLRPC.TL_peerUser()
+            peer.user_id = d
+        elif d > -1000000000000:
+            peer = TLRPC.TL_peerChat()
+            peer.chat_id = -d
+        else:
+            peer = TLRPC.TL_peerChannel()
+            peer.channel_id = -d - 1000000000000
+        msg.peer_id = peer
+
+        try:
+            from_peer = TLRPC.TL_peerUser()
+            from_peer.user_id = int(UserConfig.getInstance(acc).getClientUserId())
+            msg.from_id = from_peer
+        except Exception:
+            pass
+
+        gift_cls = getattr(TLRPC, "TL_starGift", None) or getattr(TLRPC, "StarGift", None)
+        if gift_cls is None:
+            return False
+        gift = gift_cls()
+        try:
+            gift.id = int(number or 0)
+        except Exception:
+            pass
+        try:
+            gift.stars = int(stars or 0)
+        except Exception:
+            pass
+        try:
+            gift.title = str(title or "Подарок")
+        except Exception:
+            pass
+        try:
+            if sticker is not None:
+                gift.sticker = sticker
+        except Exception:
+            pass
+
+        action = TLRPC.TL_messageActionStarGift()
+        action.gift = gift
+        msg.action = action
+
+        update = TLRPC.TL_updateNewMessage()
+        update.message = msg
+        update.pts = 0
+        update.pts_count = 0
+
+        container = TLRPC.TL_updates()
+        container.updates.add(update)
+        container.date = int(time.time())
+        container.seq = 0
+        container.pts = 0
+        container.pts_count = 0
+
+        mc.processUpdates(container, False)
+        return True
 
     def _show_gift_card(self, label, sticker, spent):
         builder = self._dialog()
