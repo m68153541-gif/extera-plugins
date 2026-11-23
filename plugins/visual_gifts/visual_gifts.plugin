@@ -36,7 +36,7 @@ __id__ = "visual_gifts"
 __name__ = "Визуальные подарки и NFT"
 __description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
 __author__ = "MultiTool"
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -95,11 +95,29 @@ class VisualGiftsPlugin(BasePlugin):
     def on_plugin_load(self):
         self._history: List[Dict[str, Any]] = []
         self._inventory: List[Dict[str, Any]] = []
-        self._load_history()
-        self._load_inventory()
-        menu_ids = []
+        self._load_error = ""
+        self._menu_ids = []
         try:
-            menu_ids.append(
+            self._load_history()
+            self._load_inventory()
+            self._register_menus()
+        except Exception as exc:
+            self._load_error = "%s: %s" % (type(exc).__name__, exc)
+            try:
+                self.logger.exception("plugin load failed")
+            except Exception:
+                pass
+        try:
+            if self._load_error:
+                self._toast_info("Visual Gifts: ошибка — " + self._load_error[:150])
+            else:
+                self._toast_ok("Visual Gifts загружен")
+        except Exception:
+            pass
+
+    def _register_menus(self):
+        try:
+            self._menu_ids.append(
                 self.add_menu_item(
                     MenuItemData(
                         menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
@@ -111,7 +129,10 @@ class VisualGiftsPlugin(BasePlugin):
                     )
                 )
             )
-            menu_ids.append(
+        except Exception as exc:
+            self._load_error = "menu gift: %s: %s" % (type(exc).__name__, exc)
+        try:
+            self._menu_ids.append(
                 self.add_menu_item(
                     MenuItemData(
                         menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
@@ -123,10 +144,9 @@ class VisualGiftsPlugin(BasePlugin):
                     )
                 )
             )
-        except Exception:
-            self.logger.exception("menu registration failed")
-        self._menu_ids = menu_ids
-        self.logger.info("Visual Gifts & NFT loaded")
+        except Exception as exc:
+            if not self._load_error:
+                self._load_error = "menu nft: %s: %s" % (type(exc).__name__, exc)
 
     def on_plugin_unload(self):
         for item_id in getattr(self, "_menu_ids", []):
@@ -139,6 +159,26 @@ class VisualGiftsPlugin(BasePlugin):
     # Settings
     # ------------------------------------------------------------------ #
     def create_settings(self) -> List[Any]:
+        items: List[Any] = []
+        try:
+            err = getattr(self, "_load_error", "")
+            if err:
+                items.append(Header(text="Диагностика"))
+                items.append(Text(text="Ошибка: " + str(err)[:300], icon="msg_error", red=True))
+                items.append(Text(text="Полный текст — в logcat, тег plugin.visual_gifts", icon="msg_info"))
+                items.append(Divider())
+        except Exception:
+            pass
+        try:
+            items.extend(self._build_settings())
+        except Exception as exc:
+            items.append(Header(text="Ошибка настроек"))
+            items.append(
+                Text(text="%s: %s" % (type(exc).__name__, exc), icon="msg_error", red=True)
+            )
+        return items
+
+    def _build_settings(self) -> List[Any]:
         return [
             Header(text="Визуальный баланс"),
             Input(
