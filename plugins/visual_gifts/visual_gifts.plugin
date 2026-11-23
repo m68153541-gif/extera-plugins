@@ -1,0 +1,1079 @@
+# -*- coding: utf-8 -*-
+"""
+Visual Gifts & NFT для exteraGram
+
+Локальная визуальная симуляция Telegram:
+  - дарение подарков;
+  - покупка / дарение NFT-подарков;
+  - установка NFT в профиль (визуальная «витрина» в настройках);
+  - крафт NFT из подарков;
+  - визуальный баланс Stars и GRAM, регулируется в настройках.
+
+Всё локально: плагин не покупает подарки, не работает с блокчейном
+и не меняет реальный аккаунт. В чат уходит только текстовая плашка.
+"""
+
+from typing import Any, Dict, List, Optional
+
+from base_plugin import BasePlugin, MenuItemData, MenuItemType
+from android_utils import run_on_ui_thread
+from client_utils import get_last_fragment
+from ui.alert import AlertDialogBuilder
+from ui.bulletin import BulletinHelper
+from ui.settings import Header, Input, Selector, Switch, Text, Divider
+
+import json
+import random
+import time
+
+
+__id__ = "visual_gifts"
+__name__ = "Визуальные подарки и NFT"
+__description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
+__author__ = "MultiTool"
+__version__ = "1.1.0"
+__icon__ = "exteraPlugins/1"
+__app_version__ = ">=12.5.1"
+__sdk_version__ = ">=1.4.4.3"
+__category__ = ["fun", "chats"]
+
+
+K_STARS = "balance_stars"
+K_GRAM = "balance_gram"
+K_PRICE_STARS = "price_stars"
+K_PRICE_GRAM = "price_gram"
+K_CUR = "currency"
+K_SPEND = "spend_on_gift"
+K_HISTORY = "history_json"
+K_HISTORY_LIMIT = "history_limit"
+
+K_NFT_PRICE_STARS = "nft_price_stars"
+K_NFT_PRICE_GRAM = "nft_price_gram"
+K_NFT_CRAFT_COST = "nft_craft_cost"
+K_NFT_CRAFT_ITEMS = "nft_craft_items"
+K_NFT_SLOTS = "nft_profile_slots"
+K_NFT_SPEND = "spend_on_nft"
+K_NFT_SEED = "nft_seed"
+
+DEFAULT_STARS = 1000
+DEFAULT_GRAM = 5.0
+DEFAULT_PRICE_STARS = 50
+DEFAULT_PRICE_GRAM = 0.5
+DEFAULT_NFT_PRICE_STARS = 300
+DEFAULT_NFT_PRICE_GRAM = 3.0
+DEFAULT_NFT_CRAFT_COST = 3
+DEFAULT_NFT_CRAFT_ITEMS = 1
+DEFAULT_NFT_SLOTS = 3
+
+CURRENCY_ITEMS = ["Stars", "GRAM", "Смешанно"]
+NFT_RARITY = [
+    ("Обычный", 55, 1.0),
+    ("Редкий", 30, 1.5),
+    ("Эпический", 12, 2.5),
+    ("Легендарный", 3, 5.0),
+]
+NFT_MODELS = [
+    "Фигурка", "Космонавт", "Кот-маг", "Дракончик", "Кристалл",
+    "Ракета", "Рыба", "Тигр", "Маска", "Гриб", "Печать", "Сердце",
+]
+NFT_BACKDROPS = ["Небо", "Золото", "Ночь", "Лава", "Лёд", "Сад"]
+NFT_PATTERNS = ["", "Звёзды", "Полосы", "Блёстки", "Клетка"]
+
+
+def _rarity_weights() -> List[float]:
+    return [float(row[1]) for row in NFT_RARITY]
+
+
+class VisualGiftsPlugin(BasePlugin):
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+    def on_plugin_load(self):
+        self._history: List[Dict[str, Any]] = []
+        self._load_history()
+        self._inventory: List[Dict[str, Any]] = []
+        self._load_inventory()
+        self._menu_ids = [
+            self.add_menu_item(
+                MenuItemData(
+                    menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
+                    text="Подарить подарок",
+                    subtext="Визуально, без реальной оплаты",
+                    icon="msg_gift",
+                    on_click=self._on_menu_gift,
+                    priority=6,
+                )
+            ),
+            self.add_menu_item(
+                MenuItemData(
+                    menu_type=MenuItemType.MESSAGE_CONTEXT_MENU,
+                    text="Подарить NFT",
+                    subtext="Витрина NFT из вашего инвентаря",
+                    icon="msg_photo",
+                    on_click=self._on_menu_nft,
+                    priority=5,
+                )
+            ),
+        ]
+        self.logger.info("Visual Gifts & NFT loaded")
+
+    def on_plugin_unload(self):
+        for item_id in getattr(self, "_menu_ids", []):
+            try:
+                self.remove_menu_item(item_id)
+            except Exception:
+                self.logger.exception("Failed to remove menu item")
+
+    # ------------------------------------------------------------------ #
+    # Settings
+    # ------------------------------------------------------------------ #
+    def create_settings(self) -> List[Any]:
+        return [
+            Header(text="Визуальный баланс"),
+            Input(
+                key=K_STARS,
+                text="Баланс Stars",
+                default=str(DEFAULT_STARS),
+                subtext="Целое число, например 2500",
+                icon="msg_star",
+                on_change=self._on_stars_changed,
+                link_alias="balance_stars",
+            ),
+            Input(
+                key=K_GRAM,
+                text="Баланс GRAM",
+                default=str(DEFAULT_GRAM),
+                subtext="Дробное число, например 5.25",
+                icon="msg_ton",
+                on_change=self._on_gram_changed,
+                link_alias="balance_gram",
+            ),
+            Text(
+                text="Текущий баланс",
+                icon="msg_info",
+                create_sub_fragment=self._balance_page,
+                link_alias="balance_preview",
+            ),
+            Text(
+                text="Пополнить баланс",
+                icon="msg_add",
+                create_sub_fragment=self._topup_page,
+                link_alias="topup",
+            ),
+            Divider(),
+            Header(text="Подарки"),
+            Selector(
+                key=K_CUR,
+                text="Валюта списания",
+                default=0,
+                items=CURRENCY_ITEMS,
+                icon="msg_list",
+                subtext="Смешанно: сначала Stars, затем GRAM",
+            ),
+            Input(
+                key=K_PRICE_STARS,
+                text="Цена подарка, Stars",
+                default=str(DEFAULT_PRICE_STARS),
+                icon="msg_star",
+            ),
+            Input(
+                key=K_PRICE_GRAM,
+                text="Цена подарка, GRAM",
+                default=str(DEFAULT_PRICE_GRAM),
+                icon="msg_ton",
+            ),
+            Switch(
+                key=K_SPEND,
+                text="Списывать с баланса",
+                default=True,
+                subtext="Выключено — подарки бесплатные",
+                icon="msg_settings",
+            ),
+            Divider(),
+            Header(text="NFT"),
+            Text(
+                text="Магазин NFT",
+                icon="msg_cart",
+                create_sub_fragment=self._nft_shop_page,
+                link_alias="nft_shop",
+            ),
+            Text(
+                text="Мой инвентарь",
+                icon="msg_archive",
+                create_sub_fragment=self._nft_inventory_page,
+                link_alias="nft_inventory",
+            ),
+            Text(
+                text="Профиль (витрина)",
+                icon="msg_contact",
+                create_sub_fragment=self._nft_profile_page,
+                link_alias="nft_profile",
+            ),
+            Text(
+                text="Крафт NFT",
+                icon="msg_tools",
+                create_sub_fragment=self._nft_craft_page,
+                link_alias="nft_craft",
+            ),
+            Input(
+                key=K_NFT_PRICE_STARS,
+                text="Цена NFT, Stars",
+                default=str(DEFAULT_NFT_PRICE_STARS),
+                subtext="Цена покупки в магазине",
+                icon="msg_star",
+            ),
+            Input(
+                key=K_NFT_PRICE_GRAM,
+                text="Цена NFT, GRAM",
+                default=str(DEFAULT_NFT_PRICE_GRAM),
+                icon="msg_ton",
+            ),
+            Input(
+                key=K_NFT_CRAFT_COST,
+                text="Крафт: нужно подарков",
+                default=str(DEFAULT_NFT_CRAFT_COST),
+                icon="msg_tools",
+            ),
+            Input(
+                key=K_NFT_CRAFT_ITEMS,
+                text="Крафт: нужно NFT",
+                default=str(DEFAULT_NFT_CRAFT_ITEMS),
+                icon="msg_archive",
+            ),
+            Input(
+                key=K_NFT_SLOTS,
+                text="Слотов в витрине профиля",
+                default=str(DEFAULT_NFT_SLOTS),
+                icon="msg_contact",
+            ),
+            Switch(
+                key=K_NFT_SPEND,
+                text="Списывать баланс за NFT",
+                default=True,
+                icon="msg_settings",
+            ),
+            Divider(),
+            Text(
+                text="История операций",
+                icon="msg_list",
+                create_sub_fragment=self._history_page,
+            ),
+            Text(
+                text="Очистить историю",
+                icon="msg_delete",
+                red=True,
+                on_click=self._clear_history,
+            ),
+            Text(
+                text="Плагин ничего не покупает и не работает с блокчейном.",
+                subtext="Все NFT существуют только в этом плагине.",
+                icon="msg_info",
+            ),
+        ]
+
+    # ------------------------------------------------------------------ #
+    # Parsing helpers
+    # ------------------------------------------------------------------ #
+    def _num(self, raw: Any, default: float) -> float:
+        try:
+            text = str(raw).replace(",", ".").replace(" ", "").strip()
+            return float(text)
+        except Exception:
+            return float(default)
+
+    def _int_setting(self, key: str, default: int) -> int:
+        return int(self._num(self.get_setting(key, str(default)), default))
+
+    def _float_setting(self, key: str, default: float) -> float:
+        return self._num(self.get_setting(key, str(default)), default)
+
+    def _stars(self) -> int:
+        return max(0, self._int_setting(K_STARS, DEFAULT_STARS))
+
+    def _gram(self) -> float:
+        return max(0.0, self._float_setting(K_GRAM, DEFAULT_GRAM))
+
+    def _fmt_stars(self, value: float) -> str:
+        return "{:,}".format(int(value)).replace(",", " ")
+
+    def _fmt_gram(self, value: float) -> str:
+        text = ("%.4f" % float(value)).rstrip("0").rstrip(".")
+        return text if text and text != "-" else "0"
+
+    def _on_stars_changed(self, value: str):
+        n = max(0, int(self._num(value, self._stars())))
+        self.set_setting(K_STARS, str(n))
+        self._toast_info("Баланс Stars: " + self._fmt_stars(n))
+
+    def _on_gram_changed(self, value: str):
+        n = max(0.0, self._num(value, self._gram()))
+        self.set_setting(K_GRAM, self._fmt_gram(n))
+        self._toast_info("Баланс GRAM: " + self._fmt_gram(n))
+
+    def _price_text(self, spent) -> str:
+        stars_part, gram_part = spent
+        parts = []
+        if stars_part:
+            parts.append("%s Stars" % self._fmt_stars(stars_part))
+        if gram_part:
+            parts.append("%s GRAM" % self._fmt_gram(gram_part))
+        return " + ".join(parts) if parts else "бесплатно"
+
+    # ------------------------------------------------------------------ #
+    # Toast / dialog helpers
+    # ------------------------------------------------------------------ #
+    def _toast_info(self, text: str):
+        try:
+            BulletinHelper.show_info(text, get_last_fragment())
+        except Exception:
+            self.logger.exception("bulletin failed")
+
+    def _toast_ok(self, text: str):
+        try:
+            BulletinHelper.show_success(text, get_last_fragment())
+        except Exception:
+            self.logger.exception("bulletin failed")
+
+    def _dialog(self) -> Optional[AlertDialogBuilder]:
+        fragment = get_last_fragment()
+        if fragment is None:
+            return None
+        activity = fragment.getParentActivity()
+        if activity is None:
+            return None
+        return AlertDialogBuilder(activity)
+
+    # ------------------------------------------------------------------ #
+    # Settings sub-pages
+    # ------------------------------------------------------------------ #
+    def _balance_page(self) -> List[Any]:
+        return [
+            Header(text="Визуальный баланс"),
+            Text(text="Stars: " + self._fmt_stars(self._stars()), icon="msg_star", accent=True),
+            Text(text="GRAM: " + self._fmt_gram(self._gram()), icon="msg_ton", accent=True),
+            Text(text="NFT в инвентаре: %d" % len(self._inventory), icon="msg_archive"),
+            Text(text="Операций в истории: %d" % len(self._history), icon="msg_list"),
+            Text(
+                text="Эти числа локальные и не связаны с аккаунтом.",
+                icon="msg_info",
+            ),
+        ]
+
+    def _topup_page(self) -> List[Any]:
+        return [
+            Header(text="Пополнить баланс"),
+            Text(text="+100 Stars", icon="msg_add", accent=True, on_click=lambda v: self._add_stars(100)),
+            Text(text="+1 000 Stars", icon="msg_add", accent=True, on_click=lambda v: self._add_stars(1000)),
+            Text(text="+1 GRAM", icon="msg_add", accent=True, on_click=lambda v: self._add_gram(1.0)),
+            Text(text="+10 GRAM", icon="msg_add", accent=True, on_click=lambda v: self._add_gram(10.0)),
+            Divider(),
+            Text(text="Сбросить баланс", icon="msg_reset", red=True, on_click=self._reset_balance),
+        ]
+
+    def _add_stars(self, amount: int):
+        self.set_setting(K_STARS, str(self._stars() + int(amount)), reload_settings=True)
+        self._toast_ok("Зачислено %s Stars" % self._fmt_stars(amount))
+
+    def _add_gram(self, amount: float):
+        self.set_setting(K_GRAM, self._fmt_gram(self._gram() + float(amount)), reload_settings=True)
+        self._toast_ok("Зачислено %s GRAM" % self._fmt_gram(amount))
+
+    def _reset_balance(self, view=None):
+        self.set_setting(K_STARS, str(DEFAULT_STARS), reload_settings=False)
+        self.set_setting(K_GRAM, self._fmt_gram(DEFAULT_GRAM), reload_settings=True)
+        self._toast_info("Баланс сброшен")
+
+    # ------------------------------------------------------------------ #
+    # History
+    # ------------------------------------------------------------------ #
+    def _load_history(self):
+        self._history = []
+        raw = self.get_setting(K_HISTORY, "")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                self._history = [x for x in data if isinstance(x, dict)]
+        except Exception:
+            self.logger.exception("history parse failed")
+
+    def _save_history(self):
+        limit = max(1, self._int_setting(K_HISTORY_LIMIT, 150))
+        self._history = self._history[:limit]
+        try:
+            self.set_setting(K_HISTORY, json.dumps(self._history, ensure_ascii=False))
+        except Exception:
+            self.logger.exception("history save failed")
+
+    def _push_history(self, title: str, sub: str):
+        self._history.insert(0, {"title": title, "sub": sub, "ts": int(time.time())})
+        self._save_history()
+
+    def _clear_history(self, view=None):
+        self._history = []
+        self.set_setting(K_HISTORY, "")
+        self._toast_info("История очищена")
+
+    def _history_page(self) -> List[Any]:
+        items: List[Any] = [Header(text="История операций")]
+        if not self._history:
+            items.append(Text(text="Пока пусто", icon="msg_info"))
+            return items
+        for entry in self._history[:40]:
+            items.append(
+                Text(
+                    text=entry.get("title", "Операция"),
+                    subtext=entry.get("sub", ""),
+                    icon="msg_gift",
+                )
+            )
+        return items
+
+    # ------------------------------------------------------------------ #
+    # NFT inventory storage
+    # ------------------------------------------------------------------ #
+    def _storage_key(self) -> str:
+        return "nft_inventory_" + str(self._int_setting(K_NFT_SEED, 0))
+
+    def _load_inventory(self):
+        self._inventory = []
+        raw = self.get_setting(self._storage_key(), "")
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                self._inventory = [x for x in data if isinstance(x, dict)]
+        except Exception:
+            self.logger.exception("inventory parse failed")
+
+    def _save_inventory(self):
+        try:
+            self.set_setting(self._storage_key(), json.dumps(self._inventory, ensure_ascii=False))
+        except Exception:
+            self.logger.exception("inventory save failed")
+
+    def _next_id(self) -> int:
+        best = 0
+        for item in self._inventory:
+            try:
+                best = max(best, int(item.get("id", 0)))
+            except Exception:
+                continue
+        return best + 1
+
+    def _make_nft(self, title: Optional[str] = None) -> Dict[str, Any]:
+        rarities = [row[0] for row in NFT_RARITY]
+        rarity = random.choices(rarities, weights=_rarity_weights(), k=1)[0]
+        multiplier = next(row[2] for row in NFT_RARITY if row[0] == rarity)
+        model = random.choice(NFT_MODELS)
+        backdrop = random.choice(NFT_BACKDROPS)
+        pattern = random.choice(NFT_PATTERNS)
+        number = random.randint(1, 9999)
+        name = title or ("%s #%04d" % (model, number))
+        return {
+            "id": self._next_id(),
+            "name": name,
+            "model": model,
+            "rarity": rarity,
+            "backdrop": backdrop,
+            "pattern": pattern,
+            "value": int(DEFAULT_NFT_PRICE_STARS * multiplier),
+            "slot": 0,
+            "created": int(time.time()),
+        }
+
+    def _nft_label(self, item: Dict[str, Any]) -> str:
+        return "%s — %s" % (item.get("name", "NFT"), item.get("rarity", ""))
+
+    def _nft_sub(self, item: Dict[str, Any]) -> str:
+        slot = int(item.get("slot", 0) or 0)
+        where = " · слот %d" % slot if slot else ""
+        return "%s · фон: %s%s" % (
+            item.get("backdrop", "—"),
+            item.get("pattern", "") or "без узора",
+            where,
+        )
+
+    # ------------------------------------------------------------------ #
+    # NFT settings sub-pages
+    # ------------------------------------------------------------------ #
+    def _nft_shop_page(self) -> List[Any]:
+        price_stars = max(0, self._int_setting(K_NFT_PRICE_STARS, DEFAULT_NFT_PRICE_STARS))
+        price_gram = max(0.0, self._float_setting(K_NFT_PRICE_GRAM, DEFAULT_NFT_PRICE_GRAM))
+        return [
+            Header(text="Магазин NFT"),
+            Text(
+                text="Купить случайный NFT",
+                subtext="Цена: %s Stars / %s GRAM" % (self._fmt_stars(price_stars), self._fmt_gram(price_gram)),
+                icon="msg_cart",
+                accent=True,
+                on_click=self._buy_nft_click,
+            ),
+            Text(
+                text="Купить и установить в профиль",
+                subtext="Сразу займёт свободный слот витрины",
+                icon="msg_contact",
+                on_click=self._buy_nft_install_click,
+            ),
+            Divider(),
+            Text(text="Баланс: %s Stars · %s GRAM" % (self._fmt_stars(self._stars()), self._fmt_gram(self._gram())), icon="msg_info"),
+            Text(
+                text="Редкости: обычный, редкий, эпический, легендарный.",
+                subtext="Шансы заданы в плагине и не связаны с Telegram.",
+                icon="msg_info",
+            ),
+        ]
+
+    def _nft_inventory_page(self) -> List[Any]:
+        items: List[Any] = [Header(text="Мой инвентарь")]
+        if not self._inventory:
+            items.append(Text(text="Пока пусто — купите NFT в магазине", icon="msg_info"))
+            items.append(
+                Text(text="Открыть магазин", icon="msg_cart", create_sub_fragment=self._nft_shop_page)
+            )
+            return items
+        items.append(Text(text="Всего NFT: %d" % len(self._inventory), icon="msg_archive"))
+        for entry in self._inventory[:40]:
+            items.append(
+                Text(
+                    text=self._nft_label(entry),
+                    subtext=self._nft_sub(entry),
+                    icon="msg_photo",
+                    on_click=lambda v, eid=entry.get("id"): self._nft_actions(eid),
+                )
+            )
+        return items
+
+    def _nft_profile_page(self) -> List[Any]:
+        slots = max(0, self._int_setting(K_NFT_SLOTS, DEFAULT_NFT_SLOTS))
+        items: List[Any] = [Header(text="Витрина в профиле")]
+        items.append(
+            Text(
+                text="Слотов: %d, занято: %d" % (slots, len(self._nft_in_profile())),
+                icon="msg_contact",
+            )
+        )
+        for index in range(1, slots + 1):
+            entry = next((x for x in self._inventory if int(x.get("slot", 0) or 0) == index), None)
+            if entry is None:
+                items.append(
+                    Text(
+                        text="Слот %d — пусто" % index,
+                        subtext="Нажмите, чтобы выбрать NFT",
+                        icon="msg_add",
+                        on_click=lambda v, i=index: self._pick_nft_for_slot(i),
+                    )
+                )
+            else:
+                items.append(
+                    Text(
+                        text="Слот %d: %s" % (index, self._nft_label(entry)),
+                        subtext=self._nft_sub(entry) + " · нажмите, чтобы снять",
+                        icon="msg_photo",
+                        accent=True,
+                        on_click=lambda v, eid=entry.get("id"): self._unslot_nft(eid),
+                    )
+                )
+        items.append(Divider())
+        items.append(
+            Text(
+                text="Показать витрину",
+                icon="msg_info",
+                accent=True,
+                on_click=self._show_profile_showcase,
+            )
+        )
+        return items
+
+    def _nft_craft_page(self) -> List[Any]:
+        need_gifts = max(1, self._int_setting(K_NFT_CRAFT_COST, DEFAULT_NFT_CRAFT_COST))
+        need_nft = max(0, self._int_setting(K_NFT_CRAFT_ITEMS, DEFAULT_NFT_CRAFT_ITEMS))
+        return [
+            Header(text="Крафт NFT"),
+            Text(
+                text="Скрафтить NFT",
+                subtext="Нужно потратить: %d подарков · %d NFT" % (need_gifts, need_nft),
+                icon="msg_tools",
+                accent=True,
+                on_click=self._craft_nft_click,
+            ),
+            Divider(),
+            Text(
+                text="Подарков для крафта: %d" % self._gift_pool(),
+                icon="msg_gift",
+                on_click=lambda v: self._add_gift_fragments(1),
+                subtext="Нажмите, чтобы добавить «осколок подарка» (для теста)",
+            ),
+            Text(
+                text="NFT в инвентаре: %d" % len(self._inventory),
+                icon="msg_archive",
+            ),
+            Text(
+                text="При крафте расходуются самые дешёвые NFT и осколки подарков.",
+                icon="msg_info",
+            ),
+        ]
+
+    def _pick_nft_for_slot(self, slot: int):
+        available = [x for x in self._inventory if int(x.get("slot", 0) or 0) == 0]
+        if not available:
+            self._toast_info("Нет свободных NFT в инвентаре")
+            return
+        builder = self._dialog()
+        if builder is None:
+            return
+        names = [self._nft_label(x) for x in available]
+        builder.set_title("Слот %d" % slot)
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            self._slot_nft(available[which].get("id"), slot)
+
+        builder.set_items(names, on_pick)
+        builder.set_negative_button("Отмена", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _slot_nft(self, nft_id: Any, slot: int):
+        for item in self._inventory:
+            if item.get("id") == nft_id:
+                item["slot"] = int(slot)
+                self._save_inventory()
+                self._push_history("Витрина: " + self._nft_label(item), "слот %d" % slot)
+                self._toast_ok("NFT установлен в слот %d" % slot)
+                return
+        self._toast_info("NFT не найден")
+
+    def _unslot_nft(self, nft_id: Any):
+        for item in self._inventory:
+            if item.get("id") == nft_id:
+                item["slot"] = 0
+                self._save_inventory()
+                self._toast_info("NFT снят с витрины")
+                return
+
+    def _nft_in_profile(self) -> List[Dict[str, Any]]:
+        result = [x for x in self._inventory if int(x.get("slot", 0) or 0) > 0]
+        return sorted(result, key=lambda x: int(x.get("slot", 0) or 0))
+
+    def _show_profile_showcase(self, view=None):
+        shown = self._nft_in_profile()
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Витрина профиля")
+        if not shown:
+            builder.set_message("Витрина пуста.\n\nДобавьте NFT из инвентаря.")
+        else:
+            lines = []
+            for item in shown:
+                lines.append("Слот %d — %s (%s)" % (item.get("slot", 0), item.get("name"), item.get("rarity")))
+            builder.set_message("\n".join(lines))
+        builder.set_positive_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    # ------------------------------------------------------------------ #
+    # Gift fragments (for crafting)
+    # ------------------------------------------------------------------ #
+    def _gift_pool(self) -> int:
+        return max(0, self._int_setting("gift_fragments", 0))
+
+    def _add_gift_fragments(self, amount: int):
+        self.set_setting("gift_fragments", str(self._gift_pool() + int(amount)), reload_settings=True)
+        self._toast_ok("Осколков подарков: %d" % (self._gift_pool() + int(amount)))
+
+    def _craft_nft_click(self, view=None):
+        need_gifts = max(1, self._int_setting(K_NFT_CRAFT_COST, DEFAULT_NFT_CRAFT_COST))
+        need_nft = max(0, self._int_setting(K_NFT_CRAFT_ITEMS, DEFAULT_NFT_CRAFT_ITEMS))
+        if self._gift_pool() < need_gifts:
+            self._toast_info("Нужно %d осколков подарков" % need_gifts)
+            return
+        if len(self._inventory) < need_nft:
+            self._toast_info("Нужно %d NFT для крафта" % need_nft)
+            return
+
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Крафт NFT")
+        builder.set_message(
+            "Будет потрачено: %d осколков подарков и %d NFT.\n\nПродолжить?"
+            % (need_gifts, need_nft)
+        )
+
+        def on_confirm(bld, which):
+            bld.dismiss()
+            self._do_craft(need_gifts, need_nft)
+
+        builder.set_positive_button("Скрафтить", on_confirm)
+        builder.set_negative_button("Отмена", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _do_craft(self, need_gifts: int, need_nft: int):
+        self.set_setting("gift_fragments", str(self._gift_pool() - need_gifts))
+        if need_nft:
+            self._inventory.sort(key=lambda x: (int(x.get("value", 0)), int(x.get("slot", 0) or 0)))
+            self._inventory = self._inventory[need_nft:]
+        crafted = self._make_nft()
+        self._inventory.append(crafted)
+        self._save_inventory()
+        self._push_history("Крафт: " + self._nft_label(crafted), "−%d подарков" % need_gifts)
+
+        builder = self._dialog()
+        if builder is None:
+            self._toast_ok("Скрафчен: " + self._nft_label(crafted))
+            return
+        builder.set_title("Крафт готов")
+        builder.set_message("Получен NFT:\n\n%s\nРедкость: %s" % (crafted.get("name"), crafted.get("rarity")))
+        builder.set_positive_button("Круто", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    # ------------------------------------------------------------------ #
+    # NFT purchase
+    # ------------------------------------------------------------------ #
+    def _nft_price(self):
+        stars = max(0, self._int_setting(K_NFT_PRICE_STARS, DEFAULT_NFT_PRICE_STARS))
+        gram = max(0.0, self._float_setting(K_NFT_PRICE_GRAM, DEFAULT_NFT_PRICE_GRAM))
+        return stars, gram
+
+    def _buy_nft_click(self, view=None):
+        self._buy_nft(install=False)
+
+    def _buy_nft_install_click(self, view=None):
+        self._buy_nft(install=True)
+
+    def _buy_nft(self, install: bool):
+        price_stars, price_gram = self._nft_price()
+        spent = self._spend_amount(price_stars, price_gram, K_NFT_SPEND)
+        if spent is None:
+            self._toast_info("Недостаточно баланса для NFT")
+            return
+
+        nft = self._make_nft()
+        self._inventory.append(nft)
+        if install:
+            free_slot = self._free_slot()
+            if free_slot:
+                nft["slot"] = free_slot
+        self._save_inventory()
+
+        price = self._price_text(spent)
+        self._push_history("Покупка NFT: " + self._nft_label(nft), "−" + price)
+
+        builder = self._dialog()
+        if builder is None:
+            self._toast_ok("Куплен NFT: " + self._nft_label(nft))
+            return
+        builder.set_title("NFT куплен")
+        builder.set_message(
+            "%s\nРедкость: %s\nФон: %s\n\n%s\nОстаток: %s Stars · %s GRAM"
+            % (
+                nft.get("name"),
+                nft.get("rarity"),
+                nft.get("backdrop"),
+                ("Установлен в слот %d" % nft.get("slot")) if nft.get("slot") else "Лежит в инвентаре",
+                self._fmt_stars(self._stars()),
+                self._fmt_gram(self._gram()),
+            )
+        )
+        builder.set_positive_button("Готово", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _free_slot(self) -> int:
+        slots = max(0, self._int_setting(K_NFT_SLOTS, DEFAULT_NFT_SLOTS))
+        used = set(int(x.get("slot", 0) or 0) for x in self._inventory)
+        for index in range(1, slots + 1):
+            if index not in used:
+                return index
+        return 0
+
+    def _nft_actions(self, nft_id: Any):
+        entry = next((x for x in self._inventory if x.get("id") == nft_id), None)
+        if entry is None:
+            self._toast_info("NFT не найден")
+            return
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title(self._nft_label(entry))
+
+        options = ["Установить в профиль", "Снять с профиля", "Продать (за Stars)", "Удалить"]
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            if which == 0:
+                slot = self._free_slot()
+                if not slot:
+                    self._toast_info("Нет свободного слота в витрине")
+                    return
+                self._slot_nft(nft_id, slot)
+            elif which == 1:
+                self._unslot_nft(nft_id)
+            elif which == 2:
+                self._sell_nft(entry)
+            else:
+                self._delete_nft(entry)
+
+        builder.set_items(options, on_pick)
+        builder.set_negative_button("Закрыть", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _sell_nft(self, entry: Dict[str, Any]):
+        value = max(0, int(entry.get("value", 0)))
+        self.set_setting(K_STARS, str(self._stars() + value), reload_settings=True)
+        self._inventory = [x for x in self._inventory if x.get("id") != entry.get("id")]
+        self._save_inventory()
+        self._push_history("Продажа NFT: " + self._nft_label(entry), "+%s Stars" % self._fmt_stars(value))
+        self._toast_ok("Получено %s Stars" % self._fmt_stars(value))
+
+    def _delete_nft(self, entry: Dict[str, Any]):
+        self._inventory = [x for x in self._inventory if x.get("id") != entry.get("id")]
+        self._save_inventory()
+        self._toast_info("NFT удалён")
+
+    # ------------------------------------------------------------------ #
+    # Balance spending
+    # ------------------------------------------------------------------ #
+    def _spend_amount(self, price_stars: int, price_gram: float, switch_key: str):
+        if not self.get_setting(K_SPEND, True) or not self.get_setting(switch_key, True):
+            return (0, 0.0)
+
+        mode = min(2, max(0, self._int_setting(K_CUR, 0)))
+        stars = self._stars()
+        gram = self._gram()
+
+        if mode == 0:
+            if stars < price_stars:
+                return None
+            self.set_setting(K_STARS, str(stars - price_stars))
+            return (price_stars, 0.0)
+
+        if mode == 1:
+            if gram + 1e-9 < price_gram:
+                return None
+            self.set_setting(K_GRAM, self._fmt_gram(gram - price_gram))
+            return (0, price_gram)
+
+        if stars >= price_stars:
+            self.set_setting(K_STARS, str(stars - price_stars))
+            return (price_stars, 0.0)
+
+        need_gram = 0.0
+        if price_stars > 0:
+            need_gram = (price_stars - stars) * price_gram / price_stars
+        else:
+            need_gram = price_gram
+        if gram + 1e-9 < need_gram:
+            return None
+        self.set_setting(K_STARS, "0")
+        self.set_setting(K_GRAM, self._fmt_gram(gram - need_gram))
+        return (stars, need_gram)
+
+    def _spend_gift(self):
+        return self._spend_amount(
+            max(0, self._int_setting(K_PRICE_STARS, DEFAULT_PRICE_STARS)),
+            max(0.0, self._float_setting(K_PRICE_GRAM, DEFAULT_PRICE_GRAM)),
+            K_SPEND,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Chat context menu
+    # ------------------------------------------------------------------ #
+    def _on_menu_gift(self, context: Dict[str, Any]):
+        try:
+            self._open_gift_dialog(context.get("dialog_id"), self._target_name(context))
+        except Exception:
+            self.logger.exception("gift menu failed")
+
+    def _on_menu_nft(self, context: Dict[str, Any]):
+        try:
+            self._open_nft_gift_dialog(context.get("dialog_id"), self._target_name(context))
+        except Exception:
+            self.logger.exception("nft menu failed")
+
+    def _target_name(self, context: Dict[str, Any]) -> str:
+        try:
+            chat = context.get("chat")
+            if chat is not None:
+                title = getattr(chat, "title", None)
+                if title:
+                    return str(title)
+            user = context.get("user")
+            if user is not None:
+                first = getattr(user, "first_name", None)
+                if first:
+                    last = getattr(user, "last_name", None)
+                    return str(first) + (" " + str(last) if last else "")
+        except Exception:
+            pass
+        return "получатель"
+
+    def _open_gift_dialog(self, dialog_id: Any, target: str):
+        builder = self._dialog()
+        if builder is None:
+            self._toast_info("Не удалось открыть окно")
+            return
+
+        price_stars = max(0, self._int_setting(K_PRICE_STARS, DEFAULT_PRICE_STARS))
+        price_gram = max(0.0, self._float_setting(K_PRICE_GRAM, DEFAULT_PRICE_GRAM))
+        mode_name = CURRENCY_ITEMS[min(2, max(0, self._int_setting(K_CUR, 0)))]
+
+        builder.set_title("Подарить подарок")
+        builder.set_message(
+            "Кому: %s\n\nБаланс: %s Stars · %s GRAM\nЦена: %s Stars / %s GRAM (%s)"
+            % (
+                target,
+                self._fmt_stars(self._stars()),
+                self._fmt_gram(self._gram()),
+                self._fmt_stars(price_stars),
+                self._fmt_gram(price_gram),
+                mode_name,
+            )
+        )
+
+        def on_send(bld, which):
+            bld.dismiss()
+            self._send_gift(dialog_id, target)
+
+        builder.set_positive_button("Подарить", on_send)
+        builder.set_negative_button("Отмена", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _open_nft_gift_dialog(self, dialog_id: Any, target: str):
+        available = [x for x in self._inventory if int(x.get("slot", 0) or 0) == 0]
+        if not available:
+            self._toast_info("Нет свободных NFT для подарка")
+            return
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("Подарить NFT → %s" % target)
+
+        def on_pick(bld, which):
+            bld.dismiss()
+            self._send_nft_gift(dialog_id, target, available[which])
+
+        builder.set_items([self._nft_label(x) for x in available], on_pick)
+        builder.set_negative_button("Отмена", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    def _send_nft_gift(self, dialog_id: Any, target: str, entry: Dict[str, Any]):
+        self._inventory = [x for x in self._inventory if x.get("id") != entry.get("id")]
+        self._save_inventory()
+        title = "🎨 NFT для %s" % target
+        self._push_history(title, self._nft_label(entry))
+        text = "%s\n%s\nОстаток NFT: %d" % (title, self._nft_label(entry), len(self._inventory))
+        self._send_text(dialog_id, text)
+
+        builder = self._dialog()
+        if builder is None:
+            return
+        builder.set_title("NFT подарен")
+        builder.set_message(
+            "%s получил(а) %s\n\nОстаток NFT: %d"
+            % (target, self._nft_label(entry), len(self._inventory))
+        )
+        builder.set_positive_button("Готово", lambda b, w: b.dismiss())
+        builder.show()
+        builder.set_cancelable(True)
+
+    # ------------------------------------------------------------------ #
+    # Gift flow
+    # ------------------------------------------------------------------ #
+    def _send_gift(self, dialog_id: Any, target: str):
+        spent = self._spend_gift()
+        if spent is None:
+            self._toast_info("Недостаточно баланса")
+            return
+
+        price_text = self._price_text(spent)
+        title = "🎁 Подарок для %s" % target
+        self._push_history(title, "−" + price_text)
+
+        text = "%s — %s\nОстаток: %s Stars · %s GRAM" % (
+            title,
+            price_text,
+            self._fmt_stars(self._stars()),
+            self._fmt_gram(self._gram()),
+        )
+        self._send_text(dialog_id, text)
+        self.set_setting("gift_fragments", str(self._gift_pool() + 1))
+        run_on_ui_thread(lambda: self._show_gift_result(target))
+
+    def _show_gift_result(self, target: str):
+        try:
+            builder = self._dialog()
+            if builder is None:
+                return
+            builder.set_title("🎁 Подарок отправлен")
+            builder.set_message(
+                "%s получил(а) подарок!\n\nНовый баланс: %s Stars · %s GRAM\nОсколков подарков: %d"
+                % (
+                    target,
+                    self._fmt_stars(self._stars()),
+                    self._fmt_gram(self._gram()),
+                    self._gift_pool(),
+                )
+            )
+            builder.set_positive_button("Готово", lambda b, w: b.dismiss())
+            builder.show()
+            builder.set_cancelable(True)
+        except Exception:
+            self.logger.exception("gift result dialog failed")
+
+    # ------------------------------------------------------------------ #
+    # Sending text
+    # ------------------------------------------------------------------ #
+    def _random_id(self) -> int:
+        value = random.getrandbits(62)
+        return -value if random.getrandbits(1) else value
+
+    def _send_text(self, dialog_id: Any, text: str):
+        try:
+            from client_utils import get_messages_controller
+            from org.telegram.tgnet import TLRPC
+
+            controller = get_messages_controller()
+            if controller is None or dialog_id is None:
+                self._toast_ok("Сохранено визуально")
+                return
+
+            req = TLRPC.TL_messages_sendMessage()
+            req.peer = self._make_peer(dialog_id)
+            req.message = text
+            req.random_id = self._random_id()
+            controller.sendMessage(req, False, False, None, 0, None, 0, 0, None)
+        except Exception:
+            self.logger.exception("send gift message failed")
+            self._toast_ok("Сохранено визуально")
+
+    def _make_peer(self, dialog_id: Any):
+        from org.telegram.tgnet import TLRPC
+
+        text = str(dialog_id)
+        if text.startswith("@"):
+            peer = TLRPC.TL_inputPeerUsername()
+            peer.username = text[1:]
+            return peer
+
+        value = int(text)
+        if value > 0:
+            peer = TLRPC.TL_inputPeerUser()
+            peer.user_id = value
+            return peer
+        if value > -1000000000000:
+            peer = TLRPC.TL_inputPeerChat()
+            peer.chat_id = -value
+            return peer
+        peer = TLRPC.TL_inputPeerChannel()
+        peer.channel_id = -value - 1000000000000
+        return peer
