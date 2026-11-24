@@ -20,8 +20,8 @@ INDEX = ROOT / "extera-plugins.json"
 
 REPOSITORY = {
     "schema": 1,
-    "name": "Visual Gifts & NFT",
-    "author": "MultiTool",
+    "name": "Statik",
+    "author": "ZyzaNext",
 }
 
 FIELDS = (

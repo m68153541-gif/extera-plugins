@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "name": "Visual Gifts & NFT",
-  "author": "MultiTool",
+  "name": "Statik",
+  "author": "ZyzaNext",
   "plugins": [
     {
       "id": "visual_gifts",
-      "name": "Визуальные подарки и NFT",
-      "description": "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**",
-      "author": "MultiTool",
-      "version": "1.12.0",
+      "name": "Statik",
+      "description": "Simulated gift purchases, NFT gifting, a profile showcase and crafting, plus a visual Stars and GRAM balance. Everything stays local: nothing is really bought, sent or charged.",
+      "author": "ZyzaNext",
+      "version": "1.13.0",
       "icon": "exteraPlugins/1",
       "app_version": ">=12.5.1",
       "sdk_version": ">=1.4.4.3",
@@ -17,9 +17,9 @@
         "chats"
       ],
       "file": "plugins/visual_gifts/visual_gifts.plugin",
-      "sha256": "6353a1aa8447c0cee8ecb2e3d5049f76e0e671e97667fff23d572367adc76787",
-      "size": 67056,
-      "updated_at": "2026-11-23T17:34:57Z"
+      "sha256": "02ce7a507f88165a4201c682c1cb9e87c073c01ac5ee6334481df99c43725154",
+      "size": 67002,
+      "updated_at": "2026-11-24T02:33:24Z"
     }
   ]
 }

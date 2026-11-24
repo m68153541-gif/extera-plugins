@@ -33,10 +33,10 @@ import time
 
 
 __id__ = "visual_gifts"
-__name__ = "Визуальные подарки и NFT"
-__description__ = "Симуляция подарков, покупки и дарения **NFT**, витрины в профиле и крафта, плюс визуальный баланс **Stars** и **GRAM**"
-__author__ = "MultiTool"
-__version__ = "1.12.0"
+__name__ = "Statik"
+__description__ = "Simulated gift purchases, NFT gifting, a profile showcase and crafting, plus a visual Stars and GRAM balance. Everything stays local: nothing is really bought, sent or charged."
+__author__ = "ZyzaNext"
+__version__ = "1.13.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
